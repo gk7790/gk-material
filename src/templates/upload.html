@@ -272,13 +272,15 @@
             },
 
             downloadAll() {
-                this.result.forEach((item) => {
-                    const url = new URL(item.output)
+                this.result.forEach((item, index) => {
 
-                    const filename = url.pathname.split("/").pop()
+                    if (!item.output) return
+
+                    const url = new URL(item.output, window.location.origin)
+                    const filename = url.pathname.split("/").pop() || `image_${index}.jpg`
 
                     const a = document.createElement("a")
-                    a.href = item.output
+                    a.href = url.href
                     a.download = filename
 
                     document.body.appendChild(a)
@@ -286,7 +288,6 @@
                     a.remove()
                 })
             }
-
 
 
 // ================ js ============== //
