@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Tailwind + daisyUI + Alpine + SortableJS -->
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.css" rel="stylesheet" type="text/css" />
+  <script src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .sortable-ghost {
+      opacity: 0.4;
+    }
+  </style>
+</head>
+
+<body class="bg-base-200">
+
+<div class="h-screen flex flex-col p-3"
+     x-data="app()"
+     x-init="initSortable()">
+
+      <!-- ================= 顶部导航 ================= -->
+  <div class="navbar bg-base-100 shadow-sm rounded-xl px-4 mb-2">
+      <div class="flex-1">
+          <a class="btn btn-ghost text-xl normal-case font-bold tracking-tight">GK<span class="text-primary"></span></a>
+      </div>
+      <div class="flex-none gap-2">
+          <a href="#" class="btn btn-ghost btn-sm link-primary">图片</a>
+          <a href="#" class="btn btn-ghost btn-sm">视频</a>
+          <a href="#" class="btn btn-ghost btn-sm">历史记录</a>
+      </div>
+  </div>
+
+  <!-- ================= 上半区 ================= -->
+  <div class="flex gap-3 h-2/5">
+
+    <!-- ================= 左：网格上传预览 ================= -->
+    <div class="flex-1 bg-base-100 rounded-xl shadow p-3 overflow-hidden flex flex-col">
+
+      <div class="text-sm font-bold mb-2">素材队列（可拖拽排序）</div>
+
+      <!-- ⭐ 核心：网格布局 -->
+      <div x-ref="previewList" class="flex flex-1 overflow-auto grid h-60 grid-cols-6 gap-2 p-1">
+
+        <template x-for="(file, idx) in files" :key="file.id">
+
+          <!-- ⭐ 方块卡片 -->
+          <div class="aspect-square border rounded-lg bg-base-100 shadow-sm cursor-move overflow-hidden flex flex-col">
+
+            <!-- 图片 -->
+            <div class="flex-1 bg-base-200">
+              <img :src="file.previewUrl"
+                   class="w-full h-full object-cover">
+            </div>
+
+            <!-- 文件名 -->
+            <div class="text-[10px] p-1 truncate text-center border-t bg-base-100">
+              <span x-text="file.name"></span>
+            </div>
+
+          </div>
+
+        </template>
+
+      </div>
+      <div class="text-xs text-gray-400 mt-2 flex justify-between items-center px-1">
+          <span>✋ 拖拽调整顺序 (第一个默认是logo)</span>
+          <button @click="clearAllFiles" class="btn btn-xs btn-ghost text-error" x-show="files.length">清空全部</button>
+      </div>
+    </div>
+
+    <!-- ================= 右：上传区 ================= -->
+    <div class="w-80 bg-base-100 rounded-xl shadow p-4 flex flex-col justify-between">
+
+      <div class="flex flex-col items-center">
+
+        <input type="file"
+               id="fileInput"
+               class="hidden"
+               multiple
+               accept="image/*"
+               @change="handleFiles($event)">
+
+        <label for="fileInput"
+               class="w-full aspect-square border-2 border-dashed rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-primary">
+          <div class="text-sm font-medium text-center"><span class="text-primary font-semibold">点击上传</span></div>
+          <div class="text-xs opacity-60 text-center">支持 PNG / JPG / PDF</div>
+        </label>
+
+      </div>
+
+      <div class="flex-col gap-3">
+        <div class="flex items-center justify-between bg-base-200/60 mb-2 rounded-lg px-3 py-2">
+            <label class="label cursor-pointer gap-2 p-0">
+                <span class="text-sm font-medium">添加Logo水印</span>
+                <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" x-model="enableLogo">
+            </label>
+            <span class="text-xs text-gray-500">实验功能</span>
+        </div>
+         <!-- 生成按钮 -->
+        <button class="btn btn-primary w-full gap-2" @click="upload_submit" :disabled="loading || files.length === 0">
+          <span x-text="loading ? '生成中...' : '✨ 智能生成变体'"></span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ================= 下半区 ================= -->
+  <div class="flex flex-1 mt-3 bg-base-100 rounded-xl shadow p-3 overflow-auto flex-col">
+
+  <!-- 标题 + 按钮 -->
+  <div class="flex justify-between items-center mb-2">
+    <div class="text-sm font-bold">展示区</div>
+    <button @click="downloadAll" class="btn btn-xs btn-ghost" x-show="result.length">
+      下载全部
+    </button>
+  </div>
+
+  <!-- 内容 -->
+  <div class="flex flex-wrap gap-3">
+    <template x-for="(item, index) in result" :key="index">
+      <div class="w-60 aspect-square border rounded-lg overflow-hidden bg-base-200 shadow">
+        <img :src="item.output" class="w-full h-full object-cover">
+      </div>
+    </template>
+  </div>
+
+</div>
+
+
+  <!-- Toast -->
+  <div x-show="toast"
+    x-transition:enter="transition transform ease-out duration-300"
+    x-transition:enter-start="opacity-0 translate-x-10"
+    x-transition:enter-end="opacity-100 translate-x-0"
+    x-transition:leave="transition transform ease-in duration-200"
+    x-transition:leave-start="opacity-100 translate-x-0"
+    x-transition:leave-end="opacity-0 translate-x-10"
+     class="toast toast-top toast-end">
+    <div class="alert alert-error shadow-md px-4 py-2 min-w-60 justify-center">
+      <span class="text-sm text-center w-full" x-text="toast"></span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ================= JS ================= -->
+<script>
+function app() {
+  return {
+    files: [],
+    result: [],
+    enableLogo: false,
+    sortable: null,
+    loading: false,
+    toast: "",
+    uid: "",
+
+    init() {
+      const params = new URLSearchParams(window.location.search)
+      this.uid = params.get("uid")
+    },
+
+    showToast(msg) {
+      this.toast = msg
+      setTimeout(() => this.toast = "", 3000)
+    },
+
+    // 上传文件
+    handleFiles(e) {
+      const list = Array.from(e.target.files)
+
+      list.forEach(file => {
+        this.files.push({
+          id: crypto.randomUUID(),
+          file,
+          name: file.name,
+          previewUrl: URL.createObjectURL(file),
+          output: null
+        })
+      })
+
+      this.$nextTick(() => {
+        this.initSortable()
+      })
+    },
+
+    clearAllFiles() {
+      this.files.forEach(file => {
+          if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+      });
+      this.files = [];
+      this.results = [];
+    },
+
+    // ⭐ 核心：Sortable 初始化
+    initSortable() {
+      this.$nextTick(() => {
+
+        const el = this.$refs.previewList
+        if (!el) return
+
+        // 防止重复初始化
+        if (this.sortable) {
+          this.sortable.destroy()
+        }
+
+        this.sortable = new Sortable(el, {
+          animation: 150,
+          ghostClass: "sortable-ghost",
+
+          onEnd: (evt) => {
+            const moved = this.files.splice(evt.oldIndex, 1)[0]
+            this.files.splice(evt.newIndex, 0, moved)
+          }
+        })
+      })
+    },
+
+    // 模拟处理
+    upload() {
+      this.files = this.files.map(f => ({
+        ...f,
+        output: f.previewUrl
+      }))
+    },
+
+    async upload_submit() {
+      this.loading = true
+
+      try {
+        const formData = new FormData()
+
+        this.files.forEach(f => {
+          formData.append("files", f.file)
+        })
+
+        const res = await fetch("page/variants", {
+          method: "POST",
+          headers: {"uid": this.uid},
+          body: formData
+        })
+
+        if (!res.ok) {
+          throw new Error("接口异常：" + res.status)
+        }
+
+        const data = await res.json()
+        if (data.code == 0) {
+          this.result = data.data
+        } else {
+          this.showToast(data.msg)
+        }
+      } finally {
+        this.loading = false
+      }
+    },
+
+    downloadAll() {
+       this.result.forEach((item) => {
+        const url = new URL(item.output)
+
+        const filename = url.pathname.split("/").pop()
+
+        const a = document.createElement("a")
+        a.href = item.output
+        a.download = filename
+
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+      })
+    }
+
+
+
+// ================ js ============== //
+  }
+}
+</script>
+
+</body>
+</html>
