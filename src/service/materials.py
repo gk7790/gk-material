@@ -16,6 +16,7 @@ from typing import Any
 from datetime import datetime
 from src.utils.img_utils import DEFAULT_CONFIG, build_image_candidate
 from src.core.config import config
+from src.core.task_single import get_executor
 from src.utils.dir_utils import ensure_directory, build_output_path, build_url_with_base
 from src.utils.img_utils import (
     type_file,
@@ -77,6 +78,7 @@ def process_image_video(path_name_list: list[tuple[Path, str]], uid: str, seed: 
     # 确保路径存在
     ensure_directory(variants_dir)
 
+    executor = get_executor()
     all_results: list[dict[str, Any]] = []
 
     for input_path, file_name in path_name_list:
@@ -85,10 +87,16 @@ def process_image_video(path_name_list: list[tuple[Path, str]], uid: str, seed: 
         ext = input_path.suffix.lower()
         file_type = type_file(ext)
         if file_type == "image":
-            raw_results = process_images(file_name, input_path, None, variants_date_str, DEFAULT_CONFIG, rng)
-            append_metrics_record(variants_dir, raw_results)
-            all_results.append(raw_results)
+            executor.submit(process_images, file_name, input_path, None, variants_date_str, DEFAULT_CONFIG, rng)
+            # raw_results = process_images(file_name, input_path, None, variants_date_str, DEFAULT_CONFIG, rng)
+            # append_metrics_record(variants_dir, raw_results)
+            # all_results.append(raw_results)
 
+    results = executor.run()
+    for r in results:
+        if r["success"]:
+            append_metrics_record(variants_dir, r["result"])
+            all_results.append(r["result"])
     return all_results
 
 

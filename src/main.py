@@ -8,12 +8,14 @@ from src.core.config import config
 from contextlib import asynccontextmanager
 from src.routers import default, material, page
 from fastapi.middleware.cors import CORSMiddleware
+from src.core.task_single import init_executor
 
 # --------------------------------------------------
 # 应用生命周期
 # --------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    init_executor(max_workers=90)
     # 启动时执行
     print(f"🚀 {config.APP_NAME} 已启动 | env={config.APP_ENV} | debug={config.DEBUG}")
     print("🚀 应用已启动")
