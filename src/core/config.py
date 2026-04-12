@@ -21,7 +21,7 @@ class Settings:
     APP_NAME: str = os.getenv("APP_NAME", "FastAPI Demo")
     APP_ENV: str = os.getenv("APP_ENV", "production")          # development | production
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
-    FILE_ADDR: str = os.getenv("FILE_ADDR", "E:/mnt/demo")
+    FILE_ADDR: str = os.getenv("FILE_ADDR", "C:/material")
 
     FILE_ADDR_PATH: str = Path(FILE_ADDR)
     # ---------- 服务 ----------

@@ -140,8 +140,8 @@ def process_images(file_name: str, file_path: Path, logo_path: Path | None, outp
             save_image_variant(candidate, output_path, transforms, rng)
             output_md5 = compute_image_md5(output_path)
 
-            file_path_host =  build_url_with_base(file_path, config.FILE_ADDR_PATH, config.BASE_HOST)
-            output_path_host = build_url_with_base(output_path, config.FILE_ADDR_PATH, config.BASE_HOST)
+            file_path_host =  build_url_with_base(file_path, config.FILE_ADDR_PATH, "/")
+            output_path_host = build_url_with_base(output_path, config.FILE_ADDR_PATH, "/")
 
             # ✅ 每次新建 dict（避免引用问题）
             item_dict = {
@@ -165,8 +165,8 @@ def process_images(file_name: str, file_path: Path, logo_path: Path | None, outp
             if best_image is not None:
                 output_path = build_output_path(file_path, output_dir, "image_variant", variant_index, ".jpg")
                 save_image_variant(best_image, output_path, transforms, rng)
-                file_path_host = build_url_with_base(file_path, config.FILE_ADDR_PATH, config.BASE_HOST)
-                output_path_host = build_url_with_base(output_path, config.FILE_ADDR_PATH, config.BASE_HOST)
+                file_path_host = build_url_with_base(file_path, config.FILE_ADDR_PATH, "/")
+                output_path_host = build_url_with_base(output_path, config.FILE_ADDR_PATH, "/")
                 item_dict = {
                     "model": "image",
                     "date": date_str,
