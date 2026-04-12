@@ -250,7 +250,7 @@
                         formData.append("files", f.file)
                     })
 
-                    const res = await fetch("page/variants", {
+                    const res = await fetch("/page/variants", {
                         method: "POST",
                         headers: {"uid": this.uid},
                         body: formData
