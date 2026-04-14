@@ -16,7 +16,7 @@ from typing import Any
 from datetime import datetime
 from src.utils.img_utils import DEFAULT_CONFIG, build_image_candidate
 from src.core.config import config
-from src.core.task_single import get_executor
+from src.core.task_manage import TaskExecutor
 from src.utils.dir_utils import ensure_directory, build_output_path, build_url_with_base
 from src.utils.img_utils import (
     type_file,
@@ -25,12 +25,16 @@ from src.utils.img_utils import (
     compute_image_md5,
     image_mad)
 from PIL import Image, ImageOps, UnidentifiedImageError
+from src.utils.sse_writer import sse
+import asyncio
+
+from utils.sse_writer import Progress
 
 METRICS_FILENAME = "variant_metrics.json"
 
 def reader_file_json(uid: str) -> list[dict[str, Any]]:
     variants_json = config.FILE_ADDR_PATH / "output" / uid / "variants"
-    file_path = variants_json/METRICS_FILENAME
+    file_path = variants_json / METRICS_FILENAME
 
     if not file_path.exists():
         return []
@@ -46,8 +50,6 @@ def reader_file_json(uid: str) -> list[dict[str, Any]]:
 
     return results
 
-
-    
 def append_metrics_record(output_dir: Path, record: dict[str, Any]) -> None:
     """
     把一条记录追加写入到一个日志文件（JSON Lines 格式）中
@@ -61,46 +63,38 @@ def append_metrics_record(output_dir: Path, record: dict[str, Any]) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-
 def save_image_variant(image: Image.Image, output_path: Path, cfg: dict[str, Any], rng: random.Random) -> None:
     jpeg_cfg = cfg.get("jpeg_quality", {})
     quality_min = int(jpeg_cfg.get("min", 90))
     quality_max = int(jpeg_cfg.get("max", quality_min))
-    quality = rng.randint(min(quality_min, quality_max), max(quality_min, quality_max)) if jpeg_cfg.get("enabled", False) else quality_max
+    quality = rng.randint(min(quality_min, quality_max), max(quality_min, quality_max)) if jpeg_cfg.get("enabled",
+                                                                                                        False) else quality_max
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.convert("RGB").save(output_path, format="JPEG", quality=quality, optimize=True)
 
-def process_image_video(path_name_list: list[tuple[Path, str]], uid: str, seed: int | None ) -> list[dict[str, Any]]:
+
+def process_image_video(path_name_list: list[tuple[Path, str]], uid: str, seed: int | None):
     date_str = datetime.now().strftime("%Y-%m-%d")
     variants_dir = config.FILE_ADDR_PATH / "output" / uid / "variants"
     variants_date_str = variants_dir / date_str
-
+    sse.message(f"user:{uid}", "准备处理素材变体...")
     # 确保路径存在
     ensure_directory(variants_dir)
-
-    executor = get_executor()
+    ex = TaskExecutor(max_workers=10, retries=2)
     all_results: list[dict[str, Any]] = []
+    progress = Progress(f"user:{uid}", len(path_name_list))
 
     for input_path, file_name in path_name_list:
         rng = random.Random(seed)
-
         ext = input_path.suffix.lower()
         file_type = type_file(ext)
         if file_type == "image":
-            executor.submit(process_images, file_name, input_path, None, variants_date_str, DEFAULT_CONFIG, rng)
-            # raw_results = process_images(file_name, input_path, None, variants_date_str, DEFAULT_CONFIG, rng)
-            # append_metrics_record(variants_dir, raw_results)
-            # all_results.append(raw_results)
-
-    results = executor.run()
-    for r in results:
-        if r["success"]:
-            append_metrics_record(variants_dir, r["result"])
-            all_results.append(r["result"])
-    return all_results
+            ex.submit(process_images, file_name, input_path, None, variants_date_str, DEFAULT_CONFIG, rng, uid, progress)
+    ex.run()
 
 
-def process_images(file_name: str, file_path: Path, logo_path: Path | None, output_dir: Path, cfg: dict[str, Any], rng: random.Random) -> dict[str, Any]:
+def process_images(file_name: str, file_path: Path, logo_path: Path | None, output_dir: Path, cfg: dict[str, Any],
+                   rng: random.Random, uid: str, progress: Progress) -> dict[str, Any]:
     variant_count = cfg["variant_count"]
     similarity_cfg = cfg.get("similarity", {})
     min_distance = int(similarity_cfg.get("min_dhash_distance", 0))
@@ -113,94 +107,79 @@ def process_images(file_name: str, file_path: Path, logo_path: Path | None, outp
     except (UnidentifiedImageError, OSError) as exc:
         return {"source": str(file_path), "output": str(output_dir.name), "error": str(exc)}
 
-    source_md5 = image_dhash(source_image)
-    accepted_hashes = [image_dhash(source_image)]
+    try:
+        source_md5 = image_dhash(source_image)
+        accepted_hashes = [image_dhash(source_image)]
 
-    item_dict: dict[str, Any] = {}
+        item_dict: dict[str, Any] = {}
 
-    date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for variant_index in range(1, variant_count + 1):
+            best_image: Image.Image | None = None
+            best_distance = -1
+            for attempt in range(1, max_attempts + 1):
+                candidate = build_image_candidate(source_image, logo_path, cfg, rng)
+                candidate_hash = image_dhash(candidate)
+                distance = min(hamming_distance(candidate_hash, existing) for existing in accepted_hashes)
 
-    # =========================
-    # 生成变体
-    # =========================
-    for variant_index in range(1, variant_count + 1):
-        best_image: Image.Image | None = None
-        best_distance = -1
+                # ✅ 记录最优候选（fallback 用）
+                if distance > best_distance:
+                    best_image = candidate
+                    best_distance = distance
 
-        for attempt in range(1, max_attempts + 1):
-            candidate = build_image_candidate(source_image, logo_path, cfg, rng)
-            candidate_hash = image_dhash(candidate)
-            distance = min(hamming_distance(candidate_hash, existing) for existing in accepted_hashes)
+                # ❌ 不满足相似度要求 → 继续尝试
+                if use_similarity and distance < min_distance:
+                    continue
 
-            # ✅ 记录最优候选（fallback 用）
-            if distance > best_distance:
-                best_image = candidate
-                best_distance = distance
-
-            # ❌ 不满足相似度要求 → 继续尝试
-            if use_similarity and distance < min_distance:
-                continue
-
-            # =========================
-            # 成功生成
-            # =========================
-            output_path = build_output_path(file_path, output_dir, "image_variant", variant_index, ".jpg")
-            save_image_variant(candidate, output_path, transforms, rng)
-            output_md5 = compute_image_md5(output_path)
-
-            file_path_host =  build_url_with_base(file_path, config.FILE_ADDR_PATH, "/")
-            output_path_host = build_url_with_base(output_path, config.FILE_ADDR_PATH, "/")
-
-            # ✅ 每次新建 dict（避免引用问题）
-            item_dict = {
-                "model": "image",
-                "date": date_str,
-                "original": file_name,
-                "source": file_path_host,
-                "output": output_path_host,
-                "dhash_distance": distance,
-                "mad": round(image_mad(source_image, candidate), 4),  # ✅ 修复 tuple bug
-                "md5_changed": output_md5 != source_md5,
-                "attempt": attempt,
-                "variant_index": variant_index,
-            }
-            accepted_hashes.append(candidate_hash)
-            break
-        else:
-            # =========================
-            # fallback（全部尝试失败）
-            # =========================
-            if best_image is not None:
+                # =========================
+                # 成功生成
+                # =========================
                 output_path = build_output_path(file_path, output_dir, "image_variant", variant_index, ".jpg")
-                save_image_variant(best_image, output_path, transforms, rng)
+                save_image_variant(candidate, output_path, transforms, rng)
+                output_md5 = compute_image_md5(output_path)
+
                 file_path_host = build_url_with_base(file_path, config.FILE_ADDR_PATH, "/")
                 output_path_host = build_url_with_base(output_path, config.FILE_ADDR_PATH, "/")
+
+                # ✅ 每次新建 dict（避免引用问题）
                 item_dict = {
                     "model": "image",
                     "date": date_str,
                     "original": file_name,
                     "source": file_path_host,
                     "output": output_path_host,
-                    "dhash_distance": best_distance,
-                    "note": "未达阈值，保留最优",
+                    "dhash_distance": distance,
+                    "mad": round(image_mad(source_image, candidate), 4),  # ✅ 修复 tuple bug
+                    "md5_changed": output_md5 != source_md5,
+                    "attempt": attempt,
                     "variant_index": variant_index,
                 }
+                accepted_hashes.append(candidate_hash)
+                break
+            else:
+                # =========================
+                # fallback（全部尝试失败）
+                # =========================
+                if best_image is not None:
+                    output_path = build_output_path(file_path, output_dir, "image_variant", variant_index, ".jpg")
+                    save_image_variant(best_image, output_path, transforms, rng)
+                    file_path_host = build_url_with_base(file_path, config.FILE_ADDR_PATH, "/")
+                    output_path_host = build_url_with_base(output_path, config.FILE_ADDR_PATH, "/")
+                    item_dict = {
+                        "model": "image",
+                        "date": date_str,
+                        "original": file_name,
+                        "source": file_path_host,
+                        "output": output_path_host,
+                        "dhash_distance": best_distance,
+                        "note": "未达阈值，保留最优",
+                        "variant_index": variant_index,
+                    }
+            channel, step, total = progress.step(1.0 / variant_count)
+            sse.progress(channel, step, total, f"正在处理{file_name}")
+
+    except (Exception) as exc:
+        sse.error(progress.channel(), str(exc))
+        return {"source": str(file_path), "output": str(output_dir.name), "error": str(exc)}
+    sse.info(channel, item_dict)
     return item_dict
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

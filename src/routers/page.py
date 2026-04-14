@@ -15,7 +15,10 @@ from pydantic import BaseModel, Field
 from src.utils.img_utils import type_file, SUPPORTED_VIDEO_EXTENSIONS, SUPPORTED_IMAGE_EXTENSIONS
 from src.core.config import BASE_DIR, config
 from src.utils.dir_utils import ensure_directory
-
+from src.utils.sse_writer import sse
+import time
+import asyncio
+import json
 
 router = APIRouter(prefix="/page", tags=["page"])
 
@@ -74,81 +77,90 @@ async def create_variants(request: Request):
     result = reader_file_json(uid)
     return R.ok(result)
 
-
-
+@router.get("/stream")
+async def stream(uid: str, request: Request):
+    channel = f"user:{uid}"
+    return await sse.stream(channel, request)
 
 @router.post("/variants")
-async def create_variants(request: Request, files: list[UploadFile]):
-    """
-    统一素材变体接口 —— 自动识别图片/视频并做相应处理。
+async def create_variants(request: Request):
+    """文件上传并处理 - SSE 流式返回"""
+    form = await request.form()
+    files = form.getlist("files")
 
-    - **纯图片上传**：同步处理，直接返回变体结果。
-    - **包含视频（或混合）**：异步处理，返回 task_id 供轮询。
+    uid = request.headers.get("uid")
 
-    - files: 素材文件列表（图片或视频）
-    - variant_count: 每个素材生成几个变体
-    - seed: 随机种子（可选）
-    """
-    headers = request.headers
-    # 获取单个 header
-    uid = headers.get("uid")
+    # ❌ 不再创建 event_generator
+    # ❌ 不再 create_task
 
-    if not uid or not uid.strip():
-        return R.fail("请提供窗口uid")
+    asyncio.create_task(handle_upload(uid, files))
 
-    if not files:
-        raise HTTPException(status_code=400, detail="请至少上传一个文件")
+    return R.ok(uid)
 
-    file_paths: list[tuple[Path, str]] = []   # (路径, 原始文件名)
-    all_paths: list[Path] = []                 # 用于清理
+async def handle_upload(uid: str, files):
 
-    tmp_upload_dir = config.FILE_ADDR_PATH / "output" / uid / "tmp_uploads" / datetime.now().strftime("%Y-%m-%d")
+    channel = f"user:{uid}"
+    try:
+        # =========================
+        # 校验
+        # =========================
+        if not uid:
+            sse.error(channel, "缺少 uid")
+            return
 
-    # 确保路径存在
-    ensure_directory(tmp_upload_dir)
+        if not files:
+            sse.error(channel, "请上传文件")
+            return
 
-    for file in files:
-        if file.filename is None:
-            continue
+        sse.message(channel, f"收到 {len(files)} 个文件")
 
-        ext = Path(file.filename).suffix.lower()
-        file_type = type_file(ext)
+        # =========================
+        # 准备路径
+        # =========================
+        tmp_upload_dir = Path(f"./tmp/{uid}/{datetime.now().date()}")
+        tmp_upload_dir.mkdir(parents=True, exist_ok=True)
 
-        if file_type is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"不支持的文件格式: {ext}，"
-                       f"图片支持 {SUPPORTED_IMAGE_EXTENSIONS}，"  # noqa: F821
-                       f"视频支持 {SUPPORTED_VIDEO_EXTENSIONS}",
-            )
+        file_paths = []
 
-        content = await file.read()
-        max_size = _IMAGE_MAX_SIZE if file_type == "image" else _VIDEO_MAX_SIZE
-        size_label = "50MB" if file_type == "image" else "500MB"
+        # =========================
+        # 文件处理
+        # =========================
+        for idx, file in enumerate(files, 1):
 
-        if len(content) > max_size:
-            raise HTTPException(
-                status_code=400,
-                detail=f"文件 {file.filename} 超过 {size_label} 限制",
-            )
-        temp_name = int(time.time() * 1000)
-        unique_name = f"{temp_name}{ext}"
-        save_path = tmp_upload_dir / unique_name
-        save_path.write_bytes(content)
-        all_paths.append(save_path)
-        file_paths.append((save_path, file.filename))
+            if not file.filename:
+                continue
 
-    if not file_paths:
-        raise HTTPException(status_code=400, detail=f"未找到需要处理的文件")
+            content = await file.read()
 
-    if file_paths:
-        raw_results = process_image_video(path_name_list=file_paths, uid=uid, seed = 3)
-        return R.ok(raw_results)
+            save_path = tmp_upload_dir / f"{int(time.time() * 1000)}_{file.filename}"
+            save_path.write_bytes(content)
 
-    return R.ok()
+            file_paths.append((save_path, file.filename))
 
+            # ⭐ 进度
+            sse.message(channel, f"正在上传数据 {file.filename}")
 
+        if not file_paths:
+            sse.success(channel, "没有可处理文件")
+            return
 
+        # =========================
+        # 核心处理逻辑
+        # =========================
+        sse.success(channel, "开始处理图片/视频")
 
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            process_image_video,
+            file_paths,
+            uid,
+            3
+        )
+        # =========================
+        # 完成
+        # =========================
+        sse.doen(channel, "处理完成")
 
-
+    except Exception as e:
+        sse.error(channel, f"系统错误: {str(e)}")
