@@ -16,6 +16,8 @@ from typing import Any
 from datetime import datetime
 from src.utils.img_utils import DEFAULT_CONFIG, build_image_candidate
 from src.core.config import config
+from src.utils.sse_writer import sse
+from src.utils.sse_writer import Progress
 from src.core.task_manage import TaskExecutor
 from src.utils.dir_utils import ensure_directory, build_output_path, build_url_with_base
 from src.utils.img_utils import (
@@ -25,10 +27,8 @@ from src.utils.img_utils import (
     compute_image_md5,
     image_mad)
 from PIL import Image, ImageOps, UnidentifiedImageError
-from src.utils.sse_writer import sse
 import asyncio
 
-from utils.sse_writer import Progress
 
 METRICS_FILENAME = "variant_metrics.json"
 
